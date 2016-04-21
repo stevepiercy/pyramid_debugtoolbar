@@ -209,3 +209,12 @@ def hexlify(value):
     str_ = str(value)
     hexified = text_(binascii.hexlify(bytes_(str_)))
     return hexified
+
+def dispatch_to_wsgi(app, request, root_path=None):
+    new_request = request.copy()
+    if root_path is not None:
+        if root_path.endswith('/'):
+            root_path = root_path[:-1]
+        new_request.script_name = request.script_name + root_path
+        new_request.path_info = request.path[len(root_path):]
+    return new_request.get_response(app)

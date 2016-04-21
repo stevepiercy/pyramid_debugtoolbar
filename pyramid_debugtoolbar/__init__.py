@@ -1,7 +1,5 @@
 from pyramid.config import Configurator
-from pyramid.security import NO_PERMISSION_REQUIRED
 from pyramid.settings import asbool
-from pyramid.wsgi import wsgiapp2
 from pyramid_debugtoolbar.utils import (
     as_cr_separated_list,
     as_display_debug_or_false,
@@ -14,9 +12,13 @@ from pyramid_debugtoolbar.utils import (
     SETTINGS_PREFIX,
     STATIC_PATH,
 )
-from pyramid_debugtoolbar.toolbar import (IRequestAuthorization,
-                                          toolbar_tween_factory)  # API
-toolbar_tween_factory = toolbar_tween_factory  # pyflakes
+from pyramid_debugtoolbar.toolbar import (
+    IRequestAuthorization,
+    IToolbarWSGIApp,
+    toolbar_tween_factory,
+)
+
+toolbar_tween_factory = toolbar_tween_factory  # API
 
 default_panel_names = (
     'pyramid_debugtoolbar.panels.headers.HeaderDebugPanel',
@@ -139,11 +141,9 @@ def includeme(config):
     # Create the new application using the updated settings
     application = make_application(settings, config.registry)
     config.add_route('debugtoolbar', '/_debug_toolbar/*subpath')
-    config.add_view(wsgiapp2(application), route_name='debugtoolbar',
-                    permission=NO_PERMISSION_REQUIRED)
     config.add_static_view('/_debug_toolbar/static', STATIC_PATH, static=True)
+    config.registry.registerUtility(application, IToolbarWSGIApp)
     config.introspection = introspection
-
 
 def make_application(settings, parent_registry):
     """ WSGI application for rendering the debug toolbar."""
@@ -158,10 +158,13 @@ def make_application(settings, parent_registry):
     config.add_route('debugtoolbar.execute', '/execute')
     config.add_route('debugtoolbar.console', '/console')
     config.add_route(EXC_ROUTE_NAME, '/exception')
-    config.add_route('debugtoolbar.sql_select', '/{request_id}/sqlalchemy/select/{query_index}')
-    config.add_route('debugtoolbar.sql_explain', '/{request_id}/sqlalchemy/explain/{query_index}')
+    config.add_route(
+        'debugtoolbar.sql_select',
+        '/{request_id}/sqlalchemy/select/{query_index}')
+    config.add_route(
+        'debugtoolbar.sql_explain',
+        '/{request_id}/sqlalchemy/explain/{query_index}')
     config.add_route('debugtoolbar.request', '/{request_id}')
     config.add_route('debugtoolbar.main', '/')
     config.scan('pyramid_debugtoolbar.views')
-
     return config.make_wsgi_app()

@@ -11,6 +11,7 @@ from pyramid_debugtoolbar.compat import url_unquote
 from pyramid_debugtoolbar.tbtools import get_traceback
 from pyramid_debugtoolbar.utils import addr_in
 from pyramid_debugtoolbar.utils import debug_toolbar_url
+from pyramid_debugtoolbar.utils import dispatch_to_wsgi
 from pyramid_debugtoolbar.utils import get_setting
 from pyramid_debugtoolbar.utils import hexlify
 from pyramid_debugtoolbar.utils import last_proxy
@@ -21,14 +22,20 @@ from pyramid_debugtoolbar.utils import ToolbarStorage
 
 html_types = ('text/html', 'application/xhtml+xml')
 
+class IToolbarWSGIApp(Interface):
+    """ Marker interface for the toolbar WSGI application."""
+    def __call__(environ, start_response):
+        pass
+
 
 class IRequestAuthorization(Interface):
-
     def __call__(request):
         """
         Toolbar per-request authorization.
-        Should return bool values whether toolbar is permitted to be shown
-        within provided request.
+
+        Should return bool values whether toolbar is permitted to monitor
+        the provided request.
+
         """
 
 
@@ -156,36 +163,38 @@ def toolbar_tween_factory(handler, registry, _logger=None):
         registry.exc_history = exc_history = ExceptionHistory()
         exc_history.eval_exc = intercept_exc == 'debug'
 
-    def toolbar_tween(request):
-        request.exc_history = exc_history
-        request.history = request_history
-        root_url = request.route_path('debugtoolbar', subpath='')
-        exclude = [root_url] + exclude_prefixes
-        last_proxy_addr = None
+    toolbar_app = registry.getUtility(IToolbarWSGIApp)
 
+    def toolbar_tween(request):
         try:
             p = request.path
         except UnicodeDecodeError as e:
             raise URLDecodeError(e.encoding, e.object, e.start, e.end, e.reason)
-        starts_with_excluded = list(filter(None, map(p.startswith, exclude)))
 
+        last_proxy_addr = None
         if request.remote_addr:
             last_proxy_addr = last_proxy(request.remote_addr)
 
-        if last_proxy_addr is None \
-            or starts_with_excluded \
-            or not addr_in(last_proxy_addr, hosts) \
-            or auth_check and not auth_check(request):
-                return handler(request)
+        if (
+            last_proxy_addr is None
+            or any(p.startswith(e) for e in exclude_prefixes)
+            or not addr_in(last_proxy_addr, hosts)
+            or auth_check and not auth_check(request)
+        ):
+            return handler(request)
 
+        root_path = request.route_path('debugtoolbar', subpath='')
+        if p.startswith(root_path):
+            return dispatch_to_wsgi(toolbar_app, request, root_path)
+
+        request.exc_history = exc_history
+        request.history = request_history
         request.pdtb_id = hexlify(id(request))
         toolbar = DebugToolbar(request, panel_classes, global_panel_classes,
                                default_active_panels)
         request.debug_toolbar = toolbar
 
         _handler = handler
-
-        # XXX
         for panel in toolbar.panels:
             _handler = panel.wrap_handler(_handler)
 
@@ -209,14 +218,8 @@ def toolbar_tween_factory(handler, registry, _logger=None):
                 exc_msg = msg % (request.url, exc_url)
                 _logger.exception(exc_msg)
 
-                subenviron = request.environ.copy()
-                del subenviron['PATH_INFO']
-                del subenviron['QUERY_STRING']
-                subrequest = type(request).blank(exc_url, subenviron)
-                subrequest.script_name = request.script_name
-                subrequest.path_info = \
-                    subrequest.path_info[len(request.script_name):]
-                response = request.invoke_subrequest(subrequest)
+                subrequest = type(request).blank(exc_url)
+                response = dispatch_to_wsgi(toolbar_app, subrequest, root_path)
 
                 # The original request must be processed so that the panel data exists
                 # if the request is later examined in the full toolbar view.
